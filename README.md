@@ -13,7 +13,7 @@ enqueuer (vdohide-service)                 worker-prewarm (this repo)
 │   prewarm.{pop} (non-fra     │           │   segments + master ของ     │
 │   ต้องรอ fra เสร็จก่อน)       │           │   file + clones             │
 │  reprewarm: prewarmAt เก่า    │           │ thumbnail → sprite.vtt +    │
-│   กว่า reprewarmMinutes      │           │   sprite images             │
+│   กว่า reprewarm_age_minutes │           │   sprite images             │
 └──────────────────────────────┘           │ → medias.prewarm.{pop} แล้ว │
                                            │   ลบ doc ออกจากคิว          │
                                            └─────────────────────────────┘
@@ -47,7 +47,7 @@ enqueuer (vdohide-service)                 worker-prewarm (this repo)
 
 | Name | Shape | Description |
 |---|---|---|
-| `prewarm_config` | `{enabled, slotRate, reprewarmMinutes, parallel}` | `enabled` = kill switch (worker + enqueuer), `slotRate` = queue depth per worker, `reprewarmMinutes` = re-warm age (0 = off, default 1440), `parallel` = concurrent HEADs per job (default 20) |
+| `prewarm` | `{enabled, enabled_old, prewarm_max_concurrent, prewarm_old_max_concurrent, prewarm_parallel, prewarm_old_parallel, reprewarm_age_minutes}` | shape เดิมของ server-prewarm — `enabled`/`enabled_old` เปิดปิดงาน new/reprewarm (ปิดทั้งคู่ = worker หยุด claim), `*_max_concurrent` = งานค้างในคิวต่อ pop แยกชนิด, `*_parallel` = HEAD พร้อมกันต่องานแยกชนิด (default 10/20), `reprewarm_age_minutes` = อายุก่อน warm ซ้ำ (default 60) |
 | `domain_playlist` | string | public content-node domain — **required**, งานถูกคืนคิวถ้าไม่ตั้ง |
 | `domain_player` | string | optional; ใส่เป็น `Referer` ทุก request |
 

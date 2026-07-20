@@ -39,23 +39,29 @@ func normalizeDomain(d string) string {
 	return d
 }
 
-// prewarmParallel อ่าน prewarm_config.parallel (default 20) — จำนวน HEAD
-// พร้อมกันต่อหนึ่งงาน
-func prewarmParallel(ctx context.Context) int {
-	setting, err := models.SettingModel.FindOne(ctx, bson.M{"name": enums.SettingPrewarmConfig})
+// prewarmParallel อ่านจำนวน HEAD พร้อมกันต่อหนึ่งงานจาก setting "prewarm"
+// แยกตามชนิดงาน: new → prewarm_parallel (default 10),
+// reprewarm → prewarm_old_parallel (default 20) — key เดิมของระบบเก่า
+func prewarmParallel(ctx context.Context, kind string) int {
+	key, def := "prewarm_parallel", 10
+	if kind == "reprewarm" {
+		key, def = "prewarm_old_parallel", 20
+	}
+
+	setting, err := models.SettingModel.FindOne(ctx, bson.M{"name": enums.SettingPrewarm})
 	if err != nil {
-		return 20
+		return def
 	}
 	cfg, ok := asBsonM(setting.Value)
 	if !ok {
-		return 20
+		return def
 	}
-	if v, exists := cfg["parallel"]; exists {
+	if v, exists := cfg[key]; exists {
 		if n := toInt(v); n > 0 {
 			return n
 		}
 	}
-	return 20
+	return def
 }
 
 // asBsonM แปลงค่า interface{} ที่อาจ decode มาเป็น bson.M / map / bson.D

@@ -40,7 +40,11 @@ func Run(ctx context.Context, job *models.PrewarmQueue) error {
 		return fmt.Errorf("setting domain_playlist is not set: %w", queue.ErrJobRequeue)
 	}
 	referer := normalizeDomain(getSettingString(ctx, enums.SettingDomainPlayer))
-	parallel := prewarmParallel(ctx)
+	kind := "new"
+	if job.Kind != nil && *job.Kind != "" {
+		kind = *job.Kind
+	}
+	parallel := prewarmParallel(ctx, kind)
 
 	// ── Load media (source of truth) ──────────────────────────
 	media, err := models.MediaModel.FindByID(ctx, job.MediaID)

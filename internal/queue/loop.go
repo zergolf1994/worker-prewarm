@@ -50,7 +50,7 @@ func RunLoop(ctx context.Context, workerID string, handler JobHandler) {
 			return
 		}
 
-		// kill switch (prewarm_config.enabled) — shared with the enqueuer
+		// kill switch (prewarm.enabled / enabled_old) — หยุดสนิทเมื่อปิดทั้งคู่
 		if !prewarmEnabled(ctx) {
 			sleepCtx(ctx, claimInterval)
 			continue
@@ -142,13 +142,15 @@ func ReleaseWithDelay(ctx context.Context, jobID string, d time.Duration) error 
 
 // ─── Helpers ──────────────────────────────────────────────────
 
-// prewarmEnabled reads prewarm_config.enabled — missing/malformed = true
-// (fail-open: a broken settings doc must not silently stop every worker).
+// prewarmEnabled reads setting "prewarm" — claim ต่อได้ตราบใดที่ enabled
+// หรือ enabled_old ยังเปิดอยู่ (เหมือน manager ระบบเก่า: pause เมื่อปิดทั้งคู่)
+// missing/malformed = true (fail-open: a broken settings doc must not
+// silently stop every worker).
 func prewarmEnabled(ctx context.Context) bool {
-	setting, err := models.SettingModel.FindOne(ctx, bson.M{"name": enums.SettingPrewarmConfig})
+	setting, err := models.SettingModel.FindOne(ctx, bson.M{"name": enums.SettingPrewarm})
 	if err != nil {
 		if !errors.Is(err, mongo.ErrNoDocuments) && ctx.Err() == nil {
-			log.Printf("⚠️ Read prewarm_config failed: %v", err)
+			log.Printf("⚠️ Read prewarm setting failed: %v", err)
 		}
 		return true
 	}
@@ -167,10 +169,12 @@ func prewarmEnabled(ctx context.Context) bool {
 			return true
 		}
 	}
-	if enabled, ok := cfg["enabled"].(bool); ok {
-		return enabled
+	enabled, okNew := cfg["enabled"].(bool)
+	enabledOld, okOld := cfg["enabled_old"].(bool)
+	if !okNew && !okOld {
+		return true
 	}
-	return true
+	return (okNew && enabled) || (okOld && enabledOld)
 }
 
 // sleepCtx sleeps for d or until ctx is cancelled.
