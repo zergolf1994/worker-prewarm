@@ -77,12 +77,13 @@ func StartHeartbeat(ctx context.Context, workerID string) {
 				"pid":      pid,
 				"type":     workerType,
 				// enqueuer จัดคิวราย pop + ประทับ target ให้ worker ที่ผูก storage
-				"pop":         config.AppConfig.Pop,
-				"storageId":   config.AppConfig.StorageId,
-				"status":      status,
-				"enable":      enable,
-				"activeJobs":  activeJobs,
-				"maxJobs":     1, // 1 worker = 1 job at a time
+				"pop":        config.AppConfig.Pop,
+				"storageId":  config.AppConfig.StorageId,
+				"status":     status,
+				"enable":     enable,
+				"activeJobs": activeJobs,
+				// bi-level slots: new + reprewarm รวมกัน (ตาม setting prewarm)
+				"maxJobs":     MaxJobs(hbCtx),
 				"system":      sys,
 				"heartbeatAt": now,
 				"updatedAt":   now,

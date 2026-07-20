@@ -23,28 +23,28 @@ import (
 //     + งาน reprewarm ทุกตัว (ไม่ประทับ target)
 //   - ไม่ตั้ง → เฉพาะงานที่ไม่ประทับ target (new แบบ pool + reprewarm)
 
-// Claim atomically claims the next pending prewarm job for this worker.
+// Claim atomically claims the next pending prewarm job of the given kind
+// ("new" | "reprewarm") for this worker — loop เรียกแยกช่องตาม slot ว่าง.
 // Returns (nil, nil) when the queue is empty.
-func Claim(ctx context.Context, workerID string) (*models.PrewarmQueue, error) {
+func Claim(ctx context.Context, workerID, kind string) (*models.PrewarmQueue, error) {
 	now := time.Now()
 	filter := bson.M{
 		"pop":    config.AppConfig.Pop,
 		"status": "pending",
+		"kind":   kind,
 		// งานที่รอ retry (backoff) ยังไม่ถึงเวลา — ข้ามไว้ก่อน
-		"$and": []bson.M{
-			{"$or": []bson.M{
-				{"nextRetryAt": bson.M{"$exists": false}},
-				{"nextRetryAt": bson.M{"$lte": now}},
-			}},
+		"$or": []bson.M{
+			{"nextRetryAt": bson.M{"$exists": false}},
+			{"nextRetryAt": bson.M{"$lte": now}},
 		},
 	}
-	if config.AppConfig.StorageId != "" {
-		filter["$and"] = append(filter["$and"].([]bson.M), bson.M{"$or": []bson.M{
-			{"targetStorageId": config.AppConfig.StorageId},
-			{"targetStorageId": bson.M{"$exists": false}, "kind": "reprewarm"},
-		}})
-	} else {
-		filter["targetStorageId"] = bson.M{"$exists": false}
+	// งาน new เท่านั้นที่ผูก storage ได้ (reprewarm ไม่ประทับ target — ใครก็หยิบได้)
+	if kind == "new" {
+		if config.AppConfig.StorageId != "" {
+			filter["targetStorageId"] = config.AppConfig.StorageId
+		} else {
+			filter["targetStorageId"] = bson.M{"$exists": false}
+		}
 	}
 
 	job, err := models.PrewarmQueueModel.FindOneAndUpdate(ctx,
@@ -63,23 +63,6 @@ func Claim(ctx context.Context, workerID string) (*models.PrewarmQueue, error) {
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, nil // queue empty — not an error
-		}
-		return nil, err
-	}
-	return job, nil
-}
-
-// ResumeOwn returns this worker's own processing job, if any — used on
-// startup to resume work interrupted by a crash/restart.
-func ResumeOwn(ctx context.Context, workerID string) (*models.PrewarmQueue, error) {
-	job, err := models.PrewarmQueueModel.FindOne(ctx, bson.M{
-		"pop":      config.AppConfig.Pop,
-		"status":   "processing",
-		"workerId": workerID,
-	})
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, nil
 		}
 		return nil, err
 	}
