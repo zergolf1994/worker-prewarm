@@ -11,6 +11,7 @@ import (
 	"worker-prewarm/internal/config"
 	"worker-prewarm/internal/core/logger"
 	"worker-prewarm/internal/core/utils"
+	"worker-prewarm/internal/dashboard"
 	"worker-prewarm/internal/db/database"
 	"worker-prewarm/internal/prewarm"
 	"worker-prewarm/internal/queue"
@@ -58,6 +59,10 @@ func main() {
 		defer close(hbDone)
 		queue.StartHeartbeat(ctx, workerID)
 	}()
+
+	// ── Dashboard realtime (หน้า / + SSE /events) ─────────────
+	// แบบ server-prewarm เดิม — ดูรายการที่กำลัง warm สดๆ ราย URL
+	go dashboard.Start(config.AppConfig.Port)
 
 	// ── Job loop (blocking จนโดน SIGINT/SIGTERM) ──────────────
 	// shutdown ระหว่างทำงาน → loop จะ Release งานคืนคิวให้เอง

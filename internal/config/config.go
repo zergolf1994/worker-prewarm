@@ -13,6 +13,10 @@ var AppConfig Config
 type Config struct {
 	MongoURI string
 
+	// Port ของ dashboard realtime (หน้า / + /events) — default 8886
+	// เหมือน server-prewarm เดิม; ชนกันก็แค่ไม่มี dashboard worker ทำงานต่อ
+	Port string
+
 	// Pop = edge location ของเครื่องนี้ (fra, sin, ...) — claim เฉพาะงานของ
 	// pop ตัวเอง และบันทึกผลลง medias.prewarm.{pop}
 	// ว่าง/"auto" = ตรวจเองตอน start จาก CF-Ray (main เซ็ตค่ากลับเข้ามา)
@@ -32,6 +36,7 @@ func Load() {
 
 	AppConfig = Config{
 		MongoURI:  getEnv("DATABASE_URL", "mongodb://localhost:27017"),
+		Port:      getEnv("PORT", getEnv("HTTP_PORT", "8886")),
 		Pop:       getEnv("PREWARM_POP", ""), // ว่าง = auto-detect
 		StorageId: getEnv("STORAGE_ID", ""),
 		LogPath:   getEnv("LOG_PATH", "logs/worker-prewarm.log"),

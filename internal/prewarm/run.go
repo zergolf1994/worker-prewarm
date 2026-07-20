@@ -7,8 +7,11 @@ import (
 	"log"
 	"time"
 
+	"path"
+
 	"worker-prewarm/internal/config"
 	"worker-prewarm/internal/core/enums"
+	"worker-prewarm/internal/dashboard"
 	"worker-prewarm/internal/db/models"
 	"worker-prewarm/internal/queue"
 
@@ -128,8 +131,34 @@ func Run(ctx context.Context, job *models.PrewarmQueue) error {
 		}
 	}
 
-	// ── Warm ──────────────────────────────────────────────────
-	stats := engine.Warm(ctx, urls, nil)
+	// ── Warm (สตรีมผลราย URL ให้ dashboard แบบระบบเก่า) ────────
+	hub := dashboard.GetHub()
+	resLabel := "sprite"
+	if media.Type != enums.MediaTypeThumbnail && media.Resolution != nil {
+		resLabel = *media.Resolution
+	}
+	kindLabel := kind
+	hub.JobStarted(&dashboard.JobInfo{
+		ID: job.ID, MediaSlug: media.Slug, FileSlug: file.Slug,
+		Resolution: resLabel, Kind: kindLabel, Pop: pop,
+		Total: int64(len(urls)),
+	})
+
+	stats := engine.Warm(ctx, urls, func(o URLOutcome, done, total int64) {
+		hub.JobProgress(job.ID, done, total)
+		errStr := ""
+		if o.Err != nil {
+			errStr = o.Err.Error()
+		}
+		hub.Broadcast("url_result", dashboard.URLResult{
+			JobID: job.ID, MediaSlug: media.Slug, FileSlug: file.Slug,
+			Resolution: resLabel, URL: path.Base(o.URL),
+			Status: o.Status, Cache: o.Cache, Pop: pop,
+			Duration: o.Duration.Round(time.Millisecond).String(),
+			Error:    errStr, Progress: done, Total: total,
+		})
+	})
+	defer hub.JobDone(job.ID, stats)
 
 	// shutdown/cancel กลางคัน — คืนงานเข้าคิว (สถิติไม่ครบ ไม่บันทึก)
 	if ctx.Err() != nil {

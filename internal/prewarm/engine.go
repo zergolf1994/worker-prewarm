@@ -160,9 +160,18 @@ func (e *Engine) CollectVTTURLs(ctx context.Context, vttURL string) []string {
 	return urls
 }
 
-// Warm ยิง HEAD ทุก URL (parallel ตาม engine) — onProgress ถูกเรียกทุกครั้ง
-// ที่ URL หนึ่งเสร็จ (nil ได้)
-func (e *Engine) Warm(ctx context.Context, urls []string, onProgress func(done, total int64)) WarmStats {
+// URLOutcome คือผลของการ HEAD หนึ่ง URL — ส่งต่อให้ dashboard สตรีมสด
+type URLOutcome struct {
+	URL      string
+	Status   int
+	Cache    string // HIT / MISS / EXPIRED / ... ("" = ไม่มี header)
+	Duration time.Duration
+	Err      error
+}
+
+// Warm ยิง HEAD ทุก URL (parallel ตาม engine) — onResult ถูกเรียกทุกครั้ง
+// ที่ URL หนึ่งเสร็จ พร้อมผลของ URL นั้น (nil ได้)
+func (e *Engine) Warm(ctx context.Context, urls []string, onResult func(o URLOutcome, done, total int64)) WarmStats {
 	stats := WarmStats{Total: int64(len(urls))}
 	var done int64
 
@@ -179,10 +188,27 @@ func (e *Engine) Warm(ctx context.Context, urls []string, onProgress func(done, 
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			e.headRequest(ctx, u, &stats)
+			o := e.headRequest(ctx, u)
+
+			// นับ stats จากผล
+			switch {
+			case o.Err != nil,
+				o.Status != http.StatusOK && o.Status != http.StatusPartialContent:
+				atomic.AddInt64(&stats.Failed, 1)
+			default:
+				switch o.Cache {
+				case "HIT", "REVALIDATED":
+					atomic.AddInt64(&stats.Hit, 1)
+				case "EXPIRED":
+					atomic.AddInt64(&stats.Expired, 1)
+				default: // MISS / DYNAMIC / ไม่มี header — นับเป็น miss (= เพิ่ง warm)
+					atomic.AddInt64(&stats.Miss, 1)
+				}
+			}
+
 			d := atomic.AddInt64(&done, 1)
-			if onProgress != nil {
-				onProgress(d, stats.Total)
+			if onResult != nil {
+				onResult(o, d, stats.Total)
 			}
 		}(url)
 	}
@@ -190,12 +216,12 @@ func (e *Engine) Warm(ctx context.Context, urls []string, onProgress func(done, 
 	return stats
 }
 
-// headRequest ยิง HEAD หนึ่ง URL แล้วอัพเดต stats ตาม CF-Cache-Status
-func (e *Engine) headRequest(ctx context.Context, url string, stats *WarmStats) {
+// headRequest ยิง HEAD หนึ่ง URL แล้วคืนผล
+func (e *Engine) headRequest(ctx context.Context, url string) URLOutcome {
+	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
-		atomic.AddInt64(&stats.Failed, 1)
-		return
+		return URLOutcome{URL: url, Err: err, Duration: time.Since(start)}
 	}
 	req.Header.Set("User-Agent", userAgent)
 	if e.referer != "" {
@@ -204,27 +230,19 @@ func (e *Engine) headRequest(ctx context.Context, url string, stats *WarmStats) 
 
 	resp, err := e.client.Do(req)
 	if err != nil {
-		atomic.AddInt64(&stats.Failed, 1)
-		return
+		return URLOutcome{URL: url, Err: err, Duration: time.Since(start)}
 	}
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		atomic.AddInt64(&stats.Failed, 1)
-		return
-	}
 
 	cacheStatus := resp.Header.Get("CF-Cache-Status")
 	if cacheStatus == "" {
 		cacheStatus = resp.Header.Get("X-Cache")
 	}
-	switch cacheStatus {
-	case "HIT", "REVALIDATED":
-		atomic.AddInt64(&stats.Hit, 1)
-	case "EXPIRED":
-		atomic.AddInt64(&stats.Expired, 1)
-	default: // MISS / DYNAMIC / ไม่มี header — นับเป็น miss (= เพิ่ง warm)
-		atomic.AddInt64(&stats.Miss, 1)
+	return URLOutcome{
+		URL:      url,
+		Status:   resp.StatusCode,
+		Cache:    cacheStatus,
+		Duration: time.Since(start),
 	}
 }
 

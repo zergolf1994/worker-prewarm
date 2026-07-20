@@ -17,6 +17,7 @@ UNINSTALL=false
 DATABASE_URL=""
 PREWARM_POP=""   # ว่าง = auto-detect จาก CF-Ray ตอน start
 STORAGE_ID=""
+DASH_PORT="8886"
 
 APP_NAME="worker-prewarm"
 APP_DIR="/opt/$APP_NAME"
@@ -36,6 +37,7 @@ while [[ $# -gt 0 ]]; do
         --database-url)      DATABASE_URL="$2"; shift 2 ;;
         --mongodb-uri)       DATABASE_URL="$2"; shift 2 ;; # alias เดิม
         --pop)               PREWARM_POP="$2"; shift 2 ;;
+        --port)              DASH_PORT="$2"; shift 2 ;;
         --storage-id)        STORAGE_ID="$2"; shift 2 ;;
         -h|--help)
             echo "Worker Prewarm Installer"
@@ -48,6 +50,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -w, -n NUM           Alias for --count"
             echo "  --database-url URI   MongoDB connection string (DATABASE_URL)"
             echo "  --pop POP            Edge location ของเครื่องนี้ (ไม่ใส่ = auto-detect จาก CF-Ray)"
+            echo "  --port PORT          Dashboard realtime port (default: 8886)"
             echo "  --storage-id ID      ผูกกับ storage — งานใหม่ warm เฉพาะ media ของ storage นี้"
             echo "                       (งาน reprewarm หยิบได้เสมอ; ไม่ใส่ = pool)"
             echo "  -h, --help           Show this help"
@@ -142,6 +145,7 @@ if [ -n "$DATABASE_URL" ] || [ ! -f "$APP_DIR/.env" ]; then
 DATABASE_URL=$DATABASE_URL
 PREWARM_POP=$PREWARM_POP
 STORAGE_ID=$STORAGE_ID
+PORT=$DASH_PORT
 EOF
 else
     print_status "Keeping existing .env"
