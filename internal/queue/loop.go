@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"strings"
 	"time"
 
 	"worker-prewarm/internal/core/enums"
@@ -17,21 +16,20 @@ import (
 // ─── Job loop ─────────────────────────────────────────────────
 //
 // resume own processing job (crash recovery) → then loop:
-// kill switch / disk gate → Claim → run → Complete | Fail.
+// kill switch → Claim → run → Complete (ลบ doc) | Retry | Release.
 // On shutdown mid-job the job is Released back to pending so another
 // worker picks it up immediately.
 
 // JobHandler runs one claimed job. It must respect ctx — on cancel it
 // should abort quickly and return ctx's error so the loop Releases the
-// job instead of marking it failed.
-type JobHandler func(ctx context.Context, job *models.VideoProcess) error
+// job instead of retrying it.
+type JobHandler func(ctx context.Context, job *models.PrewarmQueue) error
 
 const claimInterval = 10 * time.Second // idle poll — queue empty / disabled
 
-// ClaimGate — optional pre-claim check set by main. A non-empty reason
-// skips claiming this round (worker's storage disabled/full/offline in
-// the DB), so blocked workers idle instead of claim-release hot-looping.
-var ClaimGate func(ctx context.Context) string
+// requeueDelay — งานที่คืนคิวเพราะ config ไม่พร้อม (เช่น domain_playlist
+// ยังไม่ตั้ง) รอเท่านี้ก่อนถูกหยิบใหม่ กัน claim-release วนรัว
+const requeueDelay = 1 * time.Minute
 
 // RunLoop claims and runs jobs until ctx is cancelled. Blocking — call
 // from main after StartHeartbeat is up.
@@ -42,7 +40,7 @@ func RunLoop(ctx context.Context, workerID string, handler JobHandler) {
 	if job, err := ResumeOwn(ctx, workerID); err != nil {
 		log.Printf("⚠️ ResumeOwn failed: %v", err)
 	} else if job != nil {
-		log.Printf("♻️ Resuming interrupted job %s (file=%s)", job.ID, strPtr(job.FileID))
+		log.Printf("♻️ Resuming interrupted job %s (media=%s)", job.ID, job.MediaID)
 		runJob(ctx, job, handler)
 	}
 
@@ -56,19 +54,6 @@ func RunLoop(ctx context.Context, workerID string, handler JobHandler) {
 		if !prewarmEnabled(ctx) {
 			sleepCtx(ctx, claimInterval)
 			continue
-		}
-
-		// optional gate hook (ไม่ใช้ในโหมดปกติ — prewarm ไม่แตะดิสก์/storage)
-		if ClaimGate != nil {
-			if reason := ClaimGate(ctx); reason != "" {
-				logGateReason(reason)
-				sleepCtx(ctx, claimInterval)
-				continue
-			}
-			if lastGateReason != "" {
-				log.Println("✅ Claiming resumed")
-				lastGateReason = ""
-			}
 		}
 
 		job, err := Claim(ctx, workerID)
@@ -90,49 +75,11 @@ func RunLoop(ctx context.Context, workerID string, handler JobHandler) {
 	}
 }
 
-// cancelPollInterval — ความถี่ที่ watcher เช็คว่า admin กดยกเลิกงานนี้หรือยัง
-const cancelPollInterval = 5 * time.Second
-
-// watchCancel เฝ้า video_process ของงานที่กำลังรัน — เห็น status=cancelled
-// เมื่อไหร่ก็จุดระเบิด cancelJob → ทุก I/O (HTTP/ffmpeg/S3) ที่ผูก jobCtx ตายทันที
-func watchCancel(jobCtx context.Context, cancelJob context.CancelCauseFunc, jobID string) {
-	ticker := time.NewTicker(cancelPollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-jobCtx.Done():
-			return // งานจบเอง / shutdown — เลิกเฝ้า
-		case <-ticker.C:
-			qCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-			p, err := models.VideoProcessModel.FindByID(qCtx, jobID)
-			cancel()
-			if err == nil && p.Status != nil && *p.Status == enums.ProcessStatusCancelled {
-				log.Printf("⏹️ Cancel detected for job %s — aborting all I/O now", jobID)
-				cancelJob(ErrJobCancelled)
-				return
-			}
-		}
-	}
-}
-
 // runJob executes one job and settles its final status.
-func runJob(ctx context.Context, job *models.VideoProcess, handler JobHandler) {
-	log.Printf("▶️ Job %s started (file=%s, slug=%s)", job.ID, strPtr(job.FileID), strPtr(job.Slug))
+func runJob(ctx context.Context, job *models.PrewarmQueue, handler JobHandler) {
 	start := time.Now()
 
-	// per-job ctx: ตายได้ 2 ทาง — parent (shutdown) หรือ watcher (admin cancel)
-	// แยกเหตุด้วย context.Cause ตอน settle
-	jobCtx, cancelJob := context.WithCancelCause(ctx)
-	defer cancelJob(nil)
-	go watchCancel(jobCtx, cancelJob, job.ID)
-
-	err := handler(jobCtx, job)
-
-	// admin cancel: อาจโผล่มาเป็น sentinel ตรงๆ (จุดเช็คใน run) หรือเป็น
-	// context.Canceled ที่แทรกอยู่ในความล้มเหลวของ I/O — ดู cause เป็นหลัก
-	cancelled := errors.Is(err, ErrJobCancelled) ||
-		errors.Is(context.Cause(jobCtx), ErrJobCancelled)
+	err := handler(ctx, job)
 
 	// settle ด้วย ctx ใหม่เสมอ — ตอน shutdown ctx หลักถูก cancel ไปแล้ว
 	// แต่เรายังต้องเขียนสถานะปิดงานให้สำเร็จ
@@ -144,21 +91,23 @@ func runJob(ctx context.Context, job *models.VideoProcess, handler JobHandler) {
 		if e := Complete(settleCtx, job.ID); e != nil {
 			log.Printf("⚠️ Complete failed for job %s: %v", job.ID, e)
 		}
-		log.Printf("✅ Job %s completed in %s", job.ID, time.Since(start).Round(time.Second))
 
-	case cancelled:
-		// admin สั่งยกเลิก — doc เป็น cancelled แล้ว ห้ามไปเขียนทับ
-		log.Printf("⏹️ Job %s cancelled by admin (after %s)", job.ID, time.Since(start).Round(time.Second))
-
-	case ctx.Err() != nil || errors.Is(err, context.Canceled), errors.Is(err, ErrJobRequeue):
-		// shutdown / disk เต็ม — ไม่ใช่ความผิดของงาน คืนเข้าคิวไม่นับ retry
+	case ctx.Err() != nil || errors.Is(err, context.Canceled):
+		// shutdown — คืนเข้าคิวทันที ให้ตัวอื่นหยิบต่อ
 		if e := Release(settleCtx, job.ID); e != nil {
 			log.Printf("⚠️ Release failed for job %s: %v", job.ID, e)
 		}
 		log.Printf("↩️ Job %s released back to queue: %v", job.ID, err)
 
+	case errors.Is(err, ErrJobRequeue):
+		// config ไม่พร้อม (ไม่ใช่ความผิดของงาน) — คืนคิวพร้อมหน่วงเวลา
+		if e := ReleaseWithDelay(settleCtx, job.ID, requeueDelay); e != nil {
+			log.Printf("⚠️ Release failed for job %s: %v", job.ID, e)
+		}
+		log.Printf("↩️ Job %s requeued (+%s): %v", job.ID, requeueDelay, err)
+
 	default:
-		retried, e := RetryOrFail(settleCtx, job, err.Error(), categorize(err))
+		retried, e := RetryOrFail(settleCtx, job, err.Error())
 		if e != nil {
 			log.Printf("⚠️ RetryOrFail update failed for job %s: %v", job.ID, e)
 		}
@@ -169,9 +118,26 @@ func runJob(ctx context.Context, job *models.VideoProcess, handler JobHandler) {
 		if retried {
 			log.Printf("🔄 Job %s failed (attempt %d/%d) — requeued with backoff: %v", job.ID, attempt, MaxRetries, err)
 		} else {
-			log.Printf("❌ Job %s failed permanently (attempt %d/%d) — file marked error: %v", job.ID, attempt, MaxRetries, err)
+			log.Printf("❌ Job %s failed permanently (attempt %d/%d) — dropped from queue: %v", job.ID, attempt, MaxRetries, err)
 		}
 	}
+
+	_ = start // duration ถูก log โดย handler เอง (LogMain สรุปต่อชิ้น)
+}
+
+// ReleaseWithDelay คืนงานเข้าคิวแบบมี nextRetryAt — ไม่นับ retry
+func ReleaseWithDelay(ctx context.Context, jobID string, d time.Duration) error {
+	_, err := models.PrewarmQueueModel.FindOneAndUpdate(ctx,
+		bson.M{"_id": jobID, "status": "processing"},
+		bson.M{
+			"$set":   bson.M{"status": "pending", "nextRetryAt": time.Now().Add(d)},
+			"$unset": bson.M{"workerId": "", "claimedAt": ""},
+		},
+	)
+	if err != nil && errors.Is(err, mongo.ErrNoDocuments) {
+		return nil
+	}
+	return err
 }
 
 // ─── Helpers ──────────────────────────────────────────────────
@@ -207,43 +173,10 @@ func prewarmEnabled(ctx context.Context) bool {
 	return true
 }
 
-// categorize maps an error to errorCategory for the admin dashboard.
-func categorize(err error) string {
-	e := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(e, "timeout") || strings.Contains(e, "connection") || strings.Contains(e, "refused"):
-		return "network"
-	case strings.Contains(e, "playlist") || strings.Contains(e, "m3u8"):
-		return "playlist"
-	case strings.Contains(e, "setting") || strings.Contains(e, "domain"):
-		return "config"
-	default:
-		return "unknown"
-	}
-}
-
-// logGateReason logs a claim-gate block, but only when the reason changes —
-// a blocked worker polls every 10s and must not spam the log.
-var lastGateReason string
-
-func logGateReason(reason string) {
-	if reason != lastGateReason {
-		log.Printf("⛔ Claiming paused: %s", reason)
-		lastGateReason = reason
-	}
-}
-
 // sleepCtx sleeps for d or until ctx is cancelled.
 func sleepCtx(ctx context.Context, d time.Duration) {
 	select {
 	case <-ctx.Done():
 	case <-time.After(d):
 	}
-}
-
-func strPtr(s *string) string {
-	if s == nil {
-		return "-"
-	}
-	return *s
 }

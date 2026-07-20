@@ -13,6 +13,14 @@ var AppConfig Config
 type Config struct {
 	MongoURI string
 
+	// Pop = edge location ของเครื่องนี้ (fra, sin, ...) — claim เฉพาะงานของ
+	// pop ตัวเอง และบันทึกผลลง medias.prewarm.{pop}
+	Pop string
+
+	// StorageId (optional) — ตั้งแล้ว claim งาน new เฉพาะ media ของ storage นี้
+	// (งาน reprewarm หยิบได้เสมอไม่ว่าตั้งหรือไม่)
+	StorageId string
+
 	LogPath string // Path to rotating log file (env: LOG_PATH)
 }
 
@@ -22,8 +30,10 @@ func Load() {
 	godotenv.Load()
 
 	AppConfig = Config{
-		MongoURI: getEnv("DATABASE_URL", "mongodb://localhost:27017"),
-		LogPath:  getEnv("LOG_PATH", "logs/worker-prewarm.log"),
+		MongoURI:  getEnv("DATABASE_URL", "mongodb://localhost:27017"),
+		Pop:       getEnv("PREWARM_POP", "fra"),
+		StorageId: getEnv("STORAGE_ID", ""),
+		LogPath:   getEnv("LOG_PATH", "logs/worker-prewarm.log"),
 	}
 }
 

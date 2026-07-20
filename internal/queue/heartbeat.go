@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"worker-prewarm/internal/config"
 	"worker-prewarm/internal/core/enums"
 	"worker-prewarm/internal/db/models"
 
@@ -43,12 +44,11 @@ func StartHeartbeat(ctx context.Context, workerID string) {
 		hbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		// Slot truth lives in video_process, not this counter (see worker model
-		// on the Node side) — but report it anyway for the admin dashboard.
-		activeJobs, _ := models.VideoProcessModel.CountDocuments(hbCtx, bson.M{
-			"workerId":    workerID,
-			"status":      enums.ProcessStatusProcessing,
-			"processType": workerType,
+		// Slot truth lives in prewarm_queue, not this counter — but report
+		// it anyway for the admin dashboard.
+		activeJobs, _ := models.PrewarmQueueModel.CountDocuments(hbCtx, bson.M{
+			"workerId": workerID,
+			"status":   "processing",
 		})
 
 		status := enums.WorkerStatusIdle
@@ -72,10 +72,13 @@ func StartHeartbeat(ctx context.Context, workerID string) {
 		now := time.Now()
 		update := bson.M{
 			"$set": bson.M{
-				"hostname":    hostname,
-				"ip":          ip,
-				"pid":         pid,
-				"type":        workerType,
+				"hostname": hostname,
+				"ip":       ip,
+				"pid":      pid,
+				"type":     workerType,
+				// enqueuer จัดคิวราย pop + ประทับ target ให้ worker ที่ผูก storage
+				"pop":         config.AppConfig.Pop,
+				"storageId":   config.AppConfig.StorageId,
 				"status":      status,
 				"enable":      enable,
 				"activeJobs":  activeJobs,

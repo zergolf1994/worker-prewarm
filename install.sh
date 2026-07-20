@@ -15,6 +15,8 @@ NC='\033[0m'
 WORKER_COUNT=1
 UNINSTALL=false
 DATABASE_URL=""
+PREWARM_POP="fra"
+STORAGE_ID=""
 
 APP_NAME="worker-prewarm"
 APP_DIR="/opt/$APP_NAME"
@@ -33,6 +35,8 @@ while [[ $# -gt 0 ]]; do
         --count|-w|-n)       WORKER_COUNT="$2"; shift 2 ;;
         --database-url)      DATABASE_URL="$2"; shift 2 ;;
         --mongodb-uri)       DATABASE_URL="$2"; shift 2 ;; # alias เดิม
+        --pop)               PREWARM_POP="$2"; shift 2 ;;
+        --storage-id)        STORAGE_ID="$2"; shift 2 ;;
         -h|--help)
             echo "Worker Prewarm Installer"
             echo ""
@@ -43,6 +47,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --count NUM          Number of worker instances (default: 1)"
             echo "  -w, -n NUM           Alias for --count"
             echo "  --database-url URI   MongoDB connection string (DATABASE_URL)"
+            echo "  --pop POP            Edge location ของเครื่องนี้ (default: fra)"
+            echo "  --storage-id ID      ผูกกับ storage — งานใหม่ warm เฉพาะ media ของ storage นี้"
+            echo "                       (งาน reprewarm หยิบได้เสมอ; ไม่ใส่ = pool)"
             echo "  -h, --help           Show this help"
             echo ""
             echo "Examples:"
@@ -133,6 +140,8 @@ if [ -n "$DATABASE_URL" ] || [ ! -f "$APP_DIR/.env" ]; then
     print_status "Creating .env file..."
     cat > "$APP_DIR/.env" <<EOF
 DATABASE_URL=$DATABASE_URL
+PREWARM_POP=$PREWARM_POP
+STORAGE_ID=$STORAGE_ID
 EOF
 else
     print_status "Keeping existing .env"

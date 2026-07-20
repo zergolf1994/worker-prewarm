@@ -1,62 +1,63 @@
 # worker-prewarm
 
-CDN cache prewarmer worker for VdoHide — claims `prewarm` jobs from the
-`video_process` queue, walks the public HLS playlists of a file, and fires
-concurrent `HEAD` requests through the CDN (Cloudflare) so the first real
-viewer hits a warm edge cache.
+CDN cache prewarmer worker for VdoHide — claims per-media jobs from the
+dedicated **`prewarm_queue`** collection, walks the public HLS playlist of
+that media, and fires concurrent `HEAD` requests through the CDN
+(Cloudflare) so the first real viewer hits a warm edge cache.
 
 ```
 enqueuer (vdohide-service)                 worker-prewarm (this repo)
-┌──────────────────────────┐               ┌─────────────────────────────┐
-│ transfer completed →     │   pending     │ Claim (atomic)              │
-│   enqueue prewarm (new)  │ ────────────▶ │ collect: master playlist →  │
-│ rolling cursor →         │               │   child m3u8 → segments +   │
-│   re-prewarm old files   │               │   sprite.vtt/images + clones│
-└──────────────────────────┘               │ warm: HEAD ทุก URL (CF)     │
-                                           │ → files.prewarmAt + stats   │
+┌──────────────────────────────┐           ┌─────────────────────────────┐
+│ per pop with alive workers:  │  pending  │ Claim (atomic, own pop)     │
+│  new: media ยังไม่มี          │ ────────▶ │ video → video.m3u8 +        │
+│   prewarm.{pop} (non-fra     │           │   segments + master ของ     │
+│   ต้องรอ fra เสร็จก่อน)       │           │   file + clones             │
+│  reprewarm: prewarmAt เก่า    │           │ thumbnail → sprite.vtt +    │
+│   กว่า reprewarmMinutes      │           │   sprite images             │
+└──────────────────────────────┘           │ → medias.prewarm.{pop} แล้ว │
+                                           │   ลบ doc ออกจากคิว          │
                                            └─────────────────────────────┘
 ```
 
-## What gets warmed
+## Design
 
-For file slug `abc` on `domain_playlist`:
+- **คิวแยก** — งาน prewarm อยู่ใน `prewarm_queue` ไม่ปนกับ `video_process`
+  ระหว่างทำงานไม่อัพเดต progress ใดๆ เสร็จแล้วบันทึกผลลง
+  `medias.prewarm.{pop} = {data: {total,hit,miss,expired,failed}, prewarmAt}`
+  (shape เดิมของระบบเก่า) แล้วลบ doc ทิ้ง — คิวเก็บเฉพาะงานค้างเสมอ
+- **Multi-POP** — worker ประกาศ pop ของตัวเอง (`PREWARM_POP`) ผ่าน heartbeat
+  และ claim เฉพาะงานของ pop ตัวเอง; enqueuer จัดคิวเฉพาะ pop ที่มี worker
+  มีชีวิต งาน new ของ pop อื่นจะยังไม่ถูกจัดจนกว่า **fra** จะ warm media
+  ชิ้นนั้นเสร็จก่อน
+- **Storage binding** — worker ที่ตั้ง `STORAGE_ID` จะรับงาน **new** เฉพาะ
+  media ของ storage ตัวเอง (enqueuer ประทับ `targetStorageId` เมื่อ storage
+  นั้นมี worker ผูกอยู่) ส่วนงาน **reprewarm** ไม่ประทับ target — worker
+  ไหนก็หยิบได้ ไม่ว่ามี storageId หรือไม่
+- ล้มเหลว (playlist fetch ไม่ได้) ก็บันทึกผลเป็น failed ลง media เหมือน
+  ระบบเก่า — ไปรอรอบ reprewarm ตามอายุ ไม่ค้างคิว
 
-| URL | Source |
+## What gets warmed per job
+
+| Job type | URLs |
 |---|---|
-| `/{slug}/playlist.m3u8` | master playlist (content-node) |
-| `/{mediaSlug}/video.m3u8` | child playlist per rendition |
-| segment URLs inside each child | storage `publicUrl` domains |
-| `/{slug}/sprite/sprite.vtt` + `sprite-*.jpg` | thumbnail sprites (skipped if none) |
-| master + sprite.vtt of cloned files | clones share media, only the slug-level URLs differ |
-
-Cache status is read from `CF-Cache-Status` and recorded per job as
-`{total, hit, miss, expired, failed}` — visible in the admin queue history.
-On success the worker stamps `files.prewarmAt`, which the enqueuer uses to
-decide re-prewarm.
-
-## Queue behavior
-
-- Pool worker — no storage binding; any prewarm worker claims any job.
-- Claim is atomic (`FindOneAndUpdate` pending → processing), sorted by
-  `priority: -1, createdAt: 1` (new files before re-prewarm).
-- Retry with backoff (1m/2m, max 3) — a job only fails outright when the
-  master playlist can't be fetched or **every** URL fails.
-- Admin cancel is detected mid-run (poll every 5s) and aborts all HTTP I/O.
-- Graceful shutdown (SIGTERM) releases the job back to the queue.
+| video media | `/{mediaSlug}/video.m3u8` + ทุก segment + `/{fileSlug}/playlist.m3u8` + master ของ cloned files |
+| thumbnail media | `/{fileSlug}/sprite/sprite.vtt` + `sprite-*.jpg` ทั้งหมด |
 
 ## Settings (MongoDB `settings` collection)
 
 | Name | Shape | Description |
 |---|---|---|
 | `prewarm_config` | `{enabled, slotRate, reprewarmMinutes, parallel}` | `enabled` = kill switch (worker + enqueuer), `slotRate` = queue depth per worker, `reprewarmMinutes` = re-warm age (0 = off, default 1440), `parallel` = concurrent HEADs per job (default 20) |
-| `domain_playlist` | string | public content-node domain — **required**, jobs fail without it |
-| `domain_player` | string | optional; sent as `Referer` on every request |
+| `domain_playlist` | string | public content-node domain — **required**, งานถูกคืนคิวถ้าไม่ตั้ง |
+| `domain_player` | string | optional; ใส่เป็น `Referer` ทุก request |
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | `mongodb://localhost:27017` | MongoDB connection string |
+| `PREWARM_POP` | `fra` | edge location ของเครื่องนี้ (fra, sin, ...) |
+| `STORAGE_ID` | _(empty)_ | ผูกกับ storage — งาน new เฉพาะ media ของ storage นี้ |
 | `WORKER_ID` | `prewarm_{hostname}@1` | unique worker id (`prewarm_` prefix required) |
 | `LOG_PATH` | `logs/worker-prewarm.log` | rotating log file |
 
@@ -67,16 +68,17 @@ curl -fsSL https://raw.githubusercontent.com/zergolf1994/worker-prewarm/main/ins
     --database-url "mongodb+srv://user:pass@host/db"
 ```
 
+### POP อื่น / ผูกกับ storage
+
+```bash
+... | sudo -E bash -s -- --database-url "..." --pop sin
+... | sudo -E bash -s -- --database-url "..." --storage-id "storage-uuid"
+```
+
 ### Update binary only (preserve `.env`)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zergolf1994/worker-prewarm/main/install.sh | sudo bash -s --
-```
-
-### Multiple workers on one machine
-
-```bash
-... | sudo -E bash -s -- --database-url "..." --count 2
 ```
 
 ### Uninstall

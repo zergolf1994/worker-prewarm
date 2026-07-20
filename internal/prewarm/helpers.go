@@ -123,23 +123,26 @@ func collectCloneSlugs(ctx context.Context, fileID string) []string {
 	return slugs
 }
 
-// markPrewarmed ประทับ prewarmAt + สถิติรอบล่าสุดลงไฟล์ — enqueuer ใช้
-// prewarmAt ตัดสิน re-prewarm (เก่ากว่า reprewarmMinutes → เข้าคิวใหม่)
-func markPrewarmed(ctx context.Context, fileID string, stats WarmStats) error {
-	_, err := models.FileModel.FindByIDAndUpdate(ctx, fileID, bson.M{
+// recordPrewarm บันทึกผลรอบล่าสุดลง medias.prewarm.{pop} (shape เดียวกับ
+// ระบบเก่า: {data, prewarmAt}) — enqueuer ใช้ prewarmAt ตัดสิน re-prewarm
+// และ pop อื่นใช้ prewarm.fra.prewarmAt เป็นเงื่อนไขเริ่มงาน
+func recordPrewarm(ctx context.Context, mediaID, pop string, stats WarmStats) error {
+	_, err := models.MediaModel.FindByIDAndUpdate(ctx, mediaID, bson.M{
 		"$set": bson.M{
-			"prewarmAt": time.Now(),
-			"prewarm": bson.M{
-				"total":   stats.Total,
-				"hit":     stats.Hit,
-				"miss":    stats.Miss,
-				"expired": stats.Expired,
-				"failed":  stats.Failed,
+			"prewarm." + pop: bson.M{
+				"data": bson.M{
+					"total":   stats.Total,
+					"hit":     stats.Hit,
+					"miss":    stats.Miss,
+					"expired": stats.Expired,
+					"failed":  stats.Failed,
+				},
+				"prewarmAt": time.Now(),
 			},
 		},
 	})
 	if err != nil && errors.Is(err, mongo.ErrNoDocuments) {
-		return nil // ไฟล์หายไประหว่าง warm — ไม่เป็นไร
+		return nil // media หายไประหว่าง warm — ไม่เป็นไร
 	}
 	return err
 }
