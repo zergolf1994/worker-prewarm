@@ -132,21 +132,26 @@ func collectCloneSlugs(ctx context.Context, fileID string) []string {
 // recordPrewarm บันทึกผลรอบล่าสุดลง medias.prewarm.{pop} (shape เดียวกับ
 // ระบบเก่า: {data, prewarmAt}) — enqueuer ใช้ prewarmAt ตัดสิน re-prewarm
 // และ pop อื่นใช้ prewarm.fra.prewarmAt เป็นเงื่อนไขเริ่มงาน
+// ⚠ ยิงตรงที่ collection — goose FindByIDAndUpdate จะแอบ $set updatedAt
+// ให้เอง ซึ่งเราไม่อยากให้การ warm ไปแตะ updatedAt ของ media
 func recordPrewarm(ctx context.Context, mediaID, pop string, stats WarmStats) error {
-	_, err := models.MediaModel.FindByIDAndUpdate(ctx, mediaID, bson.M{
-		"$set": bson.M{
-			"prewarm." + pop: bson.M{
-				"data": bson.M{
-					"total":   stats.Total,
-					"hit":     stats.Hit,
-					"miss":    stats.Miss,
-					"expired": stats.Expired,
-					"failed":  stats.Failed,
+	_, err := models.MediaModel.Col().UpdateOne(ctx,
+		bson.M{"_id": mediaID},
+		bson.M{
+			"$set": bson.M{
+				"prewarm." + pop: bson.M{
+					"data": bson.M{
+						"total":   stats.Total,
+						"hit":     stats.Hit,
+						"miss":    stats.Miss,
+						"expired": stats.Expired,
+						"failed":  stats.Failed,
+					},
+					"prewarmAt": time.Now(),
 				},
-				"prewarmAt": time.Now(),
 			},
 		},
-	})
+	)
 	if err != nil && errors.Is(err, mongo.ErrNoDocuments) {
 		return nil // media หายไประหว่าง warm — ไม่เป็นไร
 	}
