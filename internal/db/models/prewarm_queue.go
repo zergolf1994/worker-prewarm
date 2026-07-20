@@ -21,6 +21,10 @@ type PrewarmQueue struct {
 
 	Type       *string `bson:"type,omitempty" json:"type,omitempty"` // video | thumbnail
 	Resolution *string `bson:"resolution,omitempty" json:"resolution,omitempty"`
+	// StorageID = storage ของ media; FirstWarm = ยังไม่เคย warm บน pop นี้
+	// (enqueuer ใช้คุมโควตาต่อ storage — worker ไม่ได้ใช้ตัดสินใจ)
+	StorageID *string `bson:"storageId,omitempty" json:"storageId,omitempty"`
+	FirstWarm *bool   `bson:"firstWarm,omitempty" json:"firstWarm,omitempty"`
 	Pop        string  `bson:"pop" json:"pop" goose:"required"`
 	Kind       *string `bson:"kind,omitempty" json:"kind,omitempty"` // new | reprewarm
 
