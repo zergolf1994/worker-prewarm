@@ -56,7 +56,7 @@ enqueuer (vdohide-service)                 worker-prewarm (this repo)
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | `mongodb://localhost:27017` | MongoDB connection string |
-| `PREWARM_POP` | `fra` | edge location ของเครื่องนี้ (fra, sin, ...) |
+| `PREWARM_POP` | _(auto)_ | edge location ของเครื่องนี้ — ไม่ตั้ง = ตรวจเองจาก CF-Ray ตอน start (ยิง HEAD ไป domain_playlist/storage แล้วอ่าน colo) |
 | `STORAGE_ID` | _(empty)_ | ผูกกับ storage — งาน new เฉพาะ media ของ storage นี้ |
 | `WORKER_ID` | `prewarm_{hostname}@1` | unique worker id (`prewarm_` prefix required) |
 | `LOG_PATH` | `logs/worker-prewarm.log` | rotating log file |

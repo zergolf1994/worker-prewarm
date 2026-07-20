@@ -46,6 +46,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// ── POP ───────────────────────────────────────────────────
+	// ไม่ตั้ง PREWARM_POP (หรือ "auto") → ตรวจจาก CF-Ray ของโดเมนที่ผ่าน CF
+	if config.AppConfig.Pop == "" || config.AppConfig.Pop == "auto" {
+		config.AppConfig.Pop = prewarm.DetectPop(ctx)
+	}
+	log.Printf("🌍 POP: %s", config.AppConfig.Pop)
+
 	hbDone := make(chan struct{})
 	go func() {
 		defer close(hbDone)

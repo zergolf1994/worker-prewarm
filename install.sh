@@ -15,7 +15,7 @@ NC='\033[0m'
 WORKER_COUNT=1
 UNINSTALL=false
 DATABASE_URL=""
-PREWARM_POP="fra"
+PREWARM_POP=""   # ว่าง = auto-detect จาก CF-Ray ตอน start
 STORAGE_ID=""
 
 APP_NAME="worker-prewarm"
@@ -47,7 +47,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --count NUM          Number of worker instances (default: 1)"
             echo "  -w, -n NUM           Alias for --count"
             echo "  --database-url URI   MongoDB connection string (DATABASE_URL)"
-            echo "  --pop POP            Edge location ของเครื่องนี้ (default: fra)"
+            echo "  --pop POP            Edge location ของเครื่องนี้ (ไม่ใส่ = auto-detect จาก CF-Ray)"
             echo "  --storage-id ID      ผูกกับ storage — งานใหม่ warm เฉพาะ media ของ storage นี้"
             echo "                       (งาน reprewarm หยิบได้เสมอ; ไม่ใส่ = pool)"
             echo "  -h, --help           Show this help"

@@ -15,6 +15,7 @@ type Config struct {
 
 	// Pop = edge location ของเครื่องนี้ (fra, sin, ...) — claim เฉพาะงานของ
 	// pop ตัวเอง และบันทึกผลลง medias.prewarm.{pop}
+	// ว่าง/"auto" = ตรวจเองตอน start จาก CF-Ray (main เซ็ตค่ากลับเข้ามา)
 	Pop string
 
 	// StorageId (optional) — ตั้งแล้ว claim งาน new เฉพาะ media ของ storage นี้
@@ -31,7 +32,7 @@ func Load() {
 
 	AppConfig = Config{
 		MongoURI:  getEnv("DATABASE_URL", "mongodb://localhost:27017"),
-		Pop:       getEnv("PREWARM_POP", "fra"),
+		Pop:       getEnv("PREWARM_POP", ""), // ว่าง = auto-detect
 		StorageId: getEnv("STORAGE_ID", ""),
 		LogPath:   getEnv("LOG_PATH", "logs/worker-prewarm.log"),
 	}
