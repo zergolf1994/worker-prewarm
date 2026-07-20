@@ -148,6 +148,13 @@ func runJob(ctx context.Context, job *models.PrewarmQueue, handler JobHandler) {
 		}
 		log.Printf("↩️ Job %s requeued (+%s): %v", job.ID, requeueDelay, err)
 
+	case errors.Is(err, ErrJobRetryLater):
+		// fail เกินเกณฑ์ — ไม่บันทึกผล คืนคิวลองใหม่ใน 10 นาที (นับ retry)
+		if e := RetryLater(settleCtx, job.ID, err.Error()); e != nil {
+			log.Printf("⚠️ RetryLater failed for job %s: %v", job.ID, e)
+		}
+		log.Printf("⏳ Job %s retry in %s: %v", job.ID, RetryLaterDelay, err)
+
 	default:
 		retried, e := RetryOrFail(settleCtx, job, err.Error())
 		if e != nil {

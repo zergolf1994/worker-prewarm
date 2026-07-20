@@ -85,6 +85,34 @@ const MaxRetries = 3
 // Release back to pending WITHOUT counting a retry.
 var ErrJobRequeue = errors.New("job requeue")
 
+// ErrJobRetryLater — ผล warm ล้มเหลวเกินเกณฑ์ (fail% > max) ไม่บันทึกผล;
+// คืนคิวพร้อมหน่วง RetryLaterDelay และ "นับ retry" — ครบ MaxRetries แล้ว
+// handler จะบันทึกผล failed แทน (กันงานพังวนกินคิวตลอดกาล)
+var ErrJobRetryLater = errors.New("job retry later")
+
+// RetryLaterDelay — ระยะรอก่อนลองใหม่เมื่อ fail เกินเกณฑ์
+const RetryLaterDelay = 10 * time.Minute
+
+// RetryLater คืนงานเข้าคิวแบบนับ retry + nextRetryAt ตาม RetryLaterDelay
+func RetryLater(ctx context.Context, jobID, errMsg string) error {
+	_, err := models.PrewarmQueueModel.FindOneAndUpdate(ctx,
+		bson.M{"_id": jobID, "status": "processing"},
+		bson.M{
+			"$set": bson.M{
+				"status":      "pending",
+				"error":       errMsg,
+				"nextRetryAt": time.Now().Add(RetryLaterDelay),
+			},
+			"$inc":   bson.M{"retryCount": 1},
+			"$unset": bson.M{"workerId": "", "claimedAt": ""},
+		},
+	)
+	if err != nil && errors.Is(err, mongo.ErrNoDocuments) {
+		return nil
+	}
+	return err
+}
+
 // retryBackoff returns the wait before attempt n runs again (1m, 2m, ...).
 func retryBackoff(attempt int) time.Duration {
 	return time.Duration(1<<(attempt-1)) * time.Minute

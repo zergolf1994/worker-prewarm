@@ -64,6 +64,25 @@ func prewarmParallel(ctx context.Context, kind string) int {
 	return def
 }
 
+// maxFailPercent อ่าน prewarm.max_fail_percent (default 10) — งานที่มี URL
+// fail เกิน % นี้จะไม่บันทึกผล และถูกคืนคิวลองใหม่ใน 10 นาที
+func maxFailPercent(ctx context.Context) int {
+	setting, err := models.SettingModel.FindOne(ctx, bson.M{"name": enums.SettingPrewarm})
+	if err != nil {
+		return 10
+	}
+	cfg, ok := asBsonM(setting.Value)
+	if !ok {
+		return 10
+	}
+	if v, exists := cfg["max_fail_percent"]; exists {
+		if n := toInt(v); n > 0 {
+			return n
+		}
+	}
+	return 10
+}
+
 // asBsonM แปลงค่า interface{} ที่อาจ decode มาเป็น bson.M / map / bson.D
 // (default registry decode document เป็น bson.D — เจอมาแล้วกับ kill switch)
 func asBsonM(v interface{}) (bson.M, bool) {
