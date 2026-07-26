@@ -76,9 +76,9 @@ func Run(ctx context.Context, job *models.PrewarmQueue) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			// vtt ไม่ตอบ = fail 100% — เข้ากติกา retry ใน 10 นาที
-			return settleFailure(ctx, job, pop, WarmStats{Total: 1, Failed: 1},
-				fmt.Sprintf("[%s] sprite.vtt not reachable", label))
+			// vtt ไม่ตอบ = fail 100% — บันทึกผลแล้วจบงาน (ไม่ retry)
+			log.Printf("⚠️ [%s@%s] sprite.vtt not reachable — recorded as failed", label, pop)
+			return recordPrewarm(ctx, job.MediaID, pop, WarmStats{Total: 1, Failed: 1})
 		}
 	} else {
 		childURL := fmt.Sprintf("%s/%s/video.m3u8", domainPlaylist, mediaSlug)
@@ -87,9 +87,9 @@ func Run(ctx context.Context, job *models.PrewarmQueue) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			// playlist ไม่ตอบ = fail 100% — เข้ากติกา retry ใน 10 นาที
-			return settleFailure(ctx, job, pop, WarmStats{Total: 1, Failed: 1},
-				fmt.Sprintf("[%s] playlist not reachable: %v", label, err))
+			// playlist ไม่ตอบ = fail 100% — บันทึกผลแล้วจบงาน (ไม่ retry)
+			log.Printf("⚠️ [%s@%s] playlist not reachable — recorded as failed: %v", label, pop, err)
+			return recordPrewarm(ctx, job.MediaID, pop, WarmStats{Total: 1, Failed: 1})
 		}
 
 		// งานคือ media ตัวนี้ตัวเดียว (1 job = 1 rendition) — ไม่แตะ master
@@ -169,29 +169,19 @@ func Run(ctx context.Context, job *models.PrewarmQueue) error {
 		}, outcomes, stats)
 	}
 
-	// fail (ไม่ใช่ HIT/MISS) เกินเกณฑ์ → ไม่บันทึก คืนคิวลองใหม่ใน 10 นาที
-	if stats.Total > 0 {
+	// บันทึกผลเสมอ ไม่ว่าจะ fail กี่ % — ไม่มี retry ในคิวอีกแล้ว
+	//
+	// เหตุผล: งานที่คา nextRetryAt กินโควตาต่อ storage ของ enqueuer ทั้งที่
+	// ยังไม่ได้ใช้แบนด์วิดท์อะไรเลย และถ้า worker ของ targetStorageId ดับ
+	// งานจะไม่มีใคร claim → retryCount ไม่เพิ่ม → ค้างกินโควตาถาวร
+	//
+	// พังแล้วบันทึกไปเลยแทน: prewarmAt ถูกตั้งเป็นตอนนี้ media จึงไปเข้าคิว
+	// ใหม่เองผ่านช่อง reprewarm เมื่อครบ reprewarm_age_minutes
+	if stats.Failed > 0 {
 		failPct := float64(stats.Failed) / float64(stats.Total) * 100
-		if failPct > float64(maxFailPercent(ctx)) {
-			return settleFailure(ctx, job, pop, stats,
-				fmt.Sprintf("[%s] failed %d/%d urls (%.0f%%)", label, stats.Failed, stats.Total, failPct))
-		}
+		log.Printf("⚠️ [%s@%s] failed %d/%d urls (%.0f%%) — recorded, will retry via reprewarm",
+			label, pop, stats.Failed, stats.Total, failPct)
 	}
 
-	return recordPrewarm(ctx, job.MediaID, pop, stats)
-}
-
-// settleFailure ตัดสินงานที่ fail เกินเกณฑ์: ยังไม่ครบ MaxRetries → คืนคิว
-// ลองใหม่ใน 10 นาที "โดยไม่บันทึกผล"; ครบแล้ว → บันทึกผล failed ลง media
-// (นับเป็น warm รอบนี้ ไปรอ reprewarm ตามอายุ) กันงานพังค้างวนกินคิว
-func settleFailure(ctx context.Context, job *models.PrewarmQueue, pop string, stats WarmStats, reason string) error {
-	attempt := 1
-	if job.RetryCount != nil {
-		attempt = *job.RetryCount + 1
-	}
-	if attempt < queue.MaxRetries {
-		return fmt.Errorf("%s: %w", reason, queue.ErrJobRetryLater)
-	}
-	log.Printf("⚠️ %s — attempt %d/%d, recorded as failed", reason, attempt, queue.MaxRetries)
 	return recordPrewarm(ctx, job.MediaID, pop, stats)
 }

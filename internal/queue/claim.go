@@ -78,72 +78,15 @@ func Complete(ctx context.Context, jobID string) error {
 	return err
 }
 
-// MaxRetries — a job fails this many times before being dropped.
-const MaxRetries = 3
-
 // ErrJobRequeue — failure is not the job's fault (เช่น setting ยังไม่ตั้ง);
 // Release back to pending WITHOUT counting a retry.
 var ErrJobRequeue = errors.New("job requeue")
 
-// ErrJobRetryLater — ผล warm ล้มเหลวเกินเกณฑ์ (fail% > max) ไม่บันทึกผล;
-// คืนคิวพร้อมหน่วง RetryLaterDelay และ "นับ retry" — ครบ MaxRetries แล้ว
-// handler จะบันทึกผล failed แทน (กันงานพังวนกินคิวตลอดกาล)
-var ErrJobRetryLater = errors.New("job retry later")
-
-// RetryLaterDelay — ระยะรอก่อนลองใหม่เมื่อ fail เกินเกณฑ์
-const RetryLaterDelay = 10 * time.Minute
-
-// RetryLater คืนงานเข้าคิวแบบนับ retry + nextRetryAt ตาม RetryLaterDelay
-func RetryLater(ctx context.Context, jobID, errMsg string) error {
-	_, err := models.PrewarmQueueModel.FindOneAndUpdate(ctx,
-		bson.M{"_id": jobID, "status": "processing"},
-		bson.M{
-			"$set": bson.M{
-				"status":      "pending",
-				"error":       errMsg,
-				"nextRetryAt": time.Now().Add(RetryLaterDelay),
-			},
-			"$inc":   bson.M{"retryCount": 1},
-			"$unset": bson.M{"workerId": "", "claimedAt": ""},
-		},
-	)
-	if err != nil && errors.Is(err, mongo.ErrNoDocuments) {
-		return nil
-	}
-	return err
-}
-
-// retryBackoff returns the wait before attempt n runs again (1m, 2m, ...).
-func retryBackoff(attempt int) time.Duration {
-	return time.Duration(1<<(attempt-1)) * time.Minute
-}
-
-// RetryOrFail settles a failed run. Under MaxRetries the SAME doc goes back
-// to pending with a backoff. At MaxRetries the doc is DROPPED — ผลล้มเหลว
-// ถูกบันทึกไว้บน media.prewarm.{pop} โดย handler แล้ว (นับเป็น warm รอบนี้
-// จบ ไปรอ reprewarm ตามอายุ) คิวไม่เก็บซาก
-func RetryOrFail(ctx context.Context, job *models.PrewarmQueue, errMsg string) (retried bool, err error) {
-	attempt := 1
-	if job.RetryCount != nil {
-		attempt = *job.RetryCount + 1
-	}
-
-	if attempt < MaxRetries {
-		_, err = models.PrewarmQueueModel.FindByIDAndUpdate(ctx, job.ID, bson.M{
-			"$set": bson.M{
-				"status":      "pending",
-				"error":       errMsg,
-				"nextRetryAt": time.Now().Add(retryBackoff(attempt)),
-			},
-			"$inc":   bson.M{"retryCount": 1},
-			"$unset": bson.M{"workerId": "", "claimedAt": ""},
-		})
-		return true, err
-	}
-
-	_, err = models.PrewarmQueueModel.Col().DeleteOne(ctx, bson.M{"_id": job.ID})
-	return false, err
-}
+// ⚠ ไม่มี retry ในคิวแล้ว — งาน warm ที่ล้มจะถูกบันทึกผลลง
+// medias.prewarm.{pop} แล้วลบ doc ทิ้ง ให้ media กลับมาเองตามรอบ reprewarm
+// ส่วน error อื่นก็ทิ้งงานไป เพราะ enqueuer จัดคิวใหม่ให้ทุกนาทีอยู่แล้ว
+// (งานที่คา nextRetryAt กินโควตาต่อ storage ของ enqueuer ทิ้งไว้เปล่าๆ และ
+//  ถ้า worker เจ้าของ targetStorageId ดับ จะค้างถาวรเพราะไม่มีใคร claim)
 
 // Release returns a claimed job to the queue (processing → pending),
 // clearing ownership. Called on graceful shutdown.

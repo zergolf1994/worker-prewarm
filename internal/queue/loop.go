@@ -148,27 +148,16 @@ func runJob(ctx context.Context, job *models.PrewarmQueue, handler JobHandler) {
 		}
 		log.Printf("↩️ Job %s requeued (+%s): %v", job.ID, requeueDelay, err)
 
-	case errors.Is(err, ErrJobRetryLater):
-		// fail เกินเกณฑ์ — ไม่บันทึกผล คืนคิวลองใหม่ใน 10 นาที (นับ retry)
-		if e := RetryLater(settleCtx, job.ID, err.Error()); e != nil {
-			log.Printf("⚠️ RetryLater failed for job %s: %v", job.ID, e)
-		}
-		log.Printf("⏳ Job %s retry in %s: %v", job.ID, RetryLaterDelay, err)
-
 	default:
-		retried, e := RetryOrFail(settleCtx, job, err.Error())
-		if e != nil {
-			log.Printf("⚠️ RetryOrFail update failed for job %s: %v", job.ID, e)
+		// ไม่ retry ในคิว — ทิ้งงานไปเลย เพราะ enqueuer ตรวจทุกนาทีอยู่แล้ว
+		// media ที่ยังไม่มีผล warm จะถูกจัดเข้าคิวใหม่เอง ส่วนตัวที่บันทึกผล
+		// แล้วก็รอรอบ reprewarm ตามอายุ — งานที่คา nextRetryAt มีแต่จะกิน
+		// โควตาของ enqueuer ทิ้งไว้เฉยๆ (ยิ่งถ้า worker เจ้าของ storage ดับ
+		// จะไม่มีใคร claim ให้ retry ค้างถาวร)
+		if e := Complete(settleCtx, job.ID); e != nil {
+			log.Printf("⚠️ Drop failed for job %s: %v", job.ID, e)
 		}
-		attempt := 1
-		if job.RetryCount != nil {
-			attempt = *job.RetryCount + 1
-		}
-		if retried {
-			log.Printf("🔄 Job %s failed (attempt %d/%d) — requeued with backoff: %v", job.ID, attempt, MaxRetries, err)
-		} else {
-			log.Printf("❌ Job %s failed permanently (attempt %d/%d) — dropped from queue: %v", job.ID, attempt, MaxRetries, err)
-		}
+		log.Printf("❌ Job %s dropped (จะกลับมาตามรอบ enqueue ใหม่): %v", job.ID, err)
 	}
 }
 
