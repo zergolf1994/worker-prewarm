@@ -33,7 +33,31 @@ type Engine struct {
 	parallel int
 }
 
+// sharedClient — client ตัวเดียวใช้ร่วมทุก job ทั้งกระบวนการ
+//
+// เดิมสร้างใหม่ทุก job ทำให้ connection pool ถูกทิ้งทันทีที่งานจบ
+// (150 job/นาที × parallel 10-20 = ~2,500 TLS handshake/นาที) ทั้งที่ยิงไป
+// โดเมนชุดเดิมตลอด — ใช้ตัวเดียวกันแล้ว connection reuse ข้าม job ได้
+//
+// ForceAttemptHTTP2 ต้องระบุเอง: Transport ที่สร้างเองไม่เปิด h2 ให้
+// อัตโนมัติแบบ http.DefaultTransport — เปิดแล้ว HEAD ทั้งพันตัวของงานหนึ่ง
+// จะ multiplex บน connection เดียวต่อโดเมน แทนการเปิดทีละเส้น
+var sharedClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		ForceAttemptHTTP2:   true,
+		MaxIdleConns:        200,
+		MaxIdleConnsPerHost: 50,
+		IdleConnTimeout:     90 * time.Second,
+	},
+	// HEAD ไม่ต้องตาม redirect — สถานะ 30x ก็คือคำตอบจาก edge แล้ว
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
 // NewEngine สร้าง engine — referer ว่างได้ (ไม่ใส่ header)
+// ตัว engine เบามาก (ถือแค่ config) ส่วน client ใช้ร่วมกันทั้งโปรเซส
 func NewEngine(parallel int, referer string) *Engine {
 	if parallel <= 0 {
 		parallel = 20
@@ -41,18 +65,7 @@ func NewEngine(parallel int, referer string) *Engine {
 	return &Engine{
 		referer:  referer,
 		parallel: parallel,
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        parallel * 2,
-				MaxIdleConnsPerHost: parallel,
-				IdleConnTimeout:     30 * time.Second,
-			},
-			// HEAD ไม่ต้องตาม redirect — สถานะ 30x ก็คือคำตอบจาก edge แล้ว
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
+		client:   sharedClient,
 	}
 }
 

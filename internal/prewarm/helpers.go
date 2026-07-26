@@ -3,8 +3,11 @@ package prewarm
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"worker-prewarm/internal/core/enums"
@@ -12,15 +15,54 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // ─── Settings ────────────────────────────────────────────────
 
+// settingCacheTTL — อ่าน setting จาก DB ถี่สุดเท่านี้ ค่าพวกนี้แทบไม่เปลี่ยน
+// แต่ถูกเรียกทุก job (4 ครั้ง/job × 150 job/นาที = 600 query ที่ไม่จำเป็น)
+// ใช้แพตเทิร์นเดียวกับ readPrewarmConfig ใน queue/loop.go
+const settingCacheTTL = 10 * time.Second
+
+type settingEntry struct {
+	doc *models.Setting
+	at  time.Time
+}
+
+var (
+	settingMu    sync.RWMutex
+	settingCache = map[string]settingEntry{}
+)
+
+// getSetting คืน setting doc จาก cache — หมดอายุแล้วค่อยยิง DB
+// อ่าน DB ไม่ได้แต่มีค่าเดิมอยู่ → ใช้ค่าเดิมต่อ ดีกว่าให้งานล้มทั้งชุด
+func getSetting(ctx context.Context, name string) *models.Setting {
+	settingMu.RLock()
+	entry, cached := settingCache[name]
+	settingMu.RUnlock()
+
+	if cached && time.Since(entry.at) < settingCacheTTL {
+		return entry.doc
+	}
+
+	doc, err := models.SettingModel.FindOne(ctx, bson.M{"name": name})
+	if err != nil {
+		if cached {
+			return entry.doc
+		}
+		return nil
+	}
+
+	settingMu.Lock()
+	settingCache[name] = settingEntry{doc: doc, at: time.Now()}
+	settingMu.Unlock()
+	return doc
+}
+
 // getSettingString อ่านค่า setting เป็น string ("" = ไม่ตั้ง/ไม่มี doc)
 func getSettingString(ctx context.Context, name string) string {
-	setting, err := models.SettingModel.FindOne(ctx, bson.M{"name": name})
-	if err != nil {
+	setting := getSetting(ctx, name)
+	if setting == nil {
 		return ""
 	}
 	return strings.TrimSpace(setting.GetString(""))
@@ -48,8 +90,8 @@ func prewarmParallel(ctx context.Context, kind string) int {
 		key, def = "prewarm_old_parallel", 20
 	}
 
-	setting, err := models.SettingModel.FindOne(ctx, bson.M{"name": enums.SettingPrewarm})
-	if err != nil {
+	setting := getSetting(ctx, enums.SettingPrewarm)
+	if setting == nil {
 		return def
 	}
 	cfg, ok := asBsonM(setting.Value)
@@ -67,8 +109,8 @@ func prewarmParallel(ctx context.Context, kind string) int {
 // maxFailPercent อ่าน prewarm.max_fail_percent (default 10) — งานที่มี URL
 // fail เกิน % นี้จะไม่บันทึกผล และถูกคืนคิวลองใหม่ใน 10 นาที
 func maxFailPercent(ctx context.Context) int {
-	setting, err := models.SettingModel.FindOne(ctx, bson.M{"name": enums.SettingPrewarm})
-	if err != nil {
+	setting := getSetting(ctx, enums.SettingPrewarm)
+	if setting == nil {
 		return 10
 	}
 	cfg, ok := asBsonM(setting.Value)
@@ -122,30 +164,79 @@ func toInt(v interface{}) int {
 
 // ─── File helpers ────────────────────────────────────────────
 
-// collectCloneSlugs คืน slug ของ cloned files ที่ยัง active — clone ใช้
-// medias ชุดเดียวกับต้นฉบับ ต่างกันแค่ master playlist / sprite.vtt ต่อ slug
-func collectCloneSlugs(ctx context.Context, fileID string) []string {
-	slugs := []string{}
-	cursor, err := models.FileModel.FindRaw(ctx, bson.M{
-		"clonedFrom":         fileID,
-		"type":               enums.FileTypeVideo,
-		"metadata.trashedAt": bson.M{"$exists": false},
-		"metadata.deletedAt": bson.M{"$exists": false},
-	}, options.Find().SetProjection(bson.M{"slug": 1}))
+// JobMeta คือข้อมูลที่ต้องใช้ประกอบ URL — ปกติมาจาก queue doc ตรงๆ
+type JobMeta struct {
+	MediaSlug  string
+	FileSlug   string
+	Type       string
+	Resolution string
+}
+
+// resolveJobMeta อ่านค่าจาก queue doc; ถ้าไม่ครบ (doc เก่าที่ enqueue ไว้
+// ก่อนเวอร์ชันนี้) ค่อย fallback ไปดึง DB แบบเดิม — คืน nil ถ้างานนี้ไม่มี
+// อะไรให้ทำแล้ว (media/file หายไป)
+func resolveJobMeta(ctx context.Context, job *models.PrewarmQueue) (*JobMeta, error) {
+	meta := &JobMeta{
+		MediaSlug:  strVal(job.MediaSlug),
+		FileSlug:   strVal(job.Slug),
+		Type:       strVal(job.Type),
+		Resolution: strVal(job.Resolution),
+	}
+	if meta.Type == "" {
+		meta.Type = enums.MediaTypeVideo
+	}
+	if meta.MediaSlug != "" && meta.FileSlug != "" {
+		return meta, nil
+	}
+	return resolveJobMetaFromDB(ctx, job, meta)
+}
+
+// resolveJobMetaFromDB — ทางสำรองสำหรับ doc เก่าที่ไม่มี slug ติดมา
+func resolveJobMetaFromDB(ctx context.Context, job *models.PrewarmQueue, meta *JobMeta) (*JobMeta, error) {
+	media, err := models.MediaModel.FindByID(ctx, job.MediaID)
 	if err != nil {
-		return slugs
-	}
-	defer cursor.Close(ctx)
-	for cursor.Next(ctx) {
-		var f models.File
-		if err := cursor.Decode(&f); err != nil {
-			continue
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			log.Printf("ℹ️ Media %s not found — nothing to prewarm", job.MediaID)
+			return nil, nil
 		}
-		if f.Slug != "" {
-			slugs = append(slugs, f.Slug)
-		}
+		return nil, fmt.Errorf("load media: %w", err)
 	}
-	return slugs
+	if media.DeletedAt != nil || media.FileID == nil {
+		log.Printf("ℹ️ Media %s deleted/orphaned — nothing to prewarm", job.MediaID)
+		return nil, nil
+	}
+
+	file, err := models.FileModel.FindByID(ctx, *media.FileID)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			log.Printf("ℹ️ File %s not found — nothing to prewarm", *media.FileID)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load file: %w", err)
+	}
+	if file.Metadata != nil && (file.Metadata.DeletedAt != nil || file.Metadata.TrashedAt != nil) {
+		log.Printf("ℹ️ File %s is trashed/deleted — nothing to prewarm", file.ID)
+		return nil, nil
+	}
+	if file.Status != enums.FileStatusReady && file.Status != enums.FileStatusReadyOriginal {
+		log.Printf("ℹ️ File %s not playable (status=%s) — skipped", file.ID, file.Status)
+		return nil, nil
+	}
+
+	meta.MediaSlug = media.Slug
+	meta.FileSlug = file.Slug
+	meta.Type = media.Type
+	if media.Resolution != nil {
+		meta.Resolution = *media.Resolution
+	}
+	return meta, nil
+}
+
+func strVal(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // recordPrewarm บันทึกผลรอบล่าสุดลง medias.prewarm.{pop} (shape เดียวกับ

@@ -26,7 +26,11 @@ type Config struct {
 	// (งาน reprewarm หยิบได้เสมอไม่ว่าตั้งหรือไม่)
 	StorageId string
 
-	LogPath string // Path to rotating log file (env: LOG_PATH)
+	// ── Log ───────────────────────────────────────────────────
+	// log ทั่วไปออก stdout เสมอ (systemd/journald เก็บให้) — ไฟล์หมุนใช้
+	// เฉพาะรายการ URL ที่ warm ซึ่งเยอะเกินกว่าจะปนใน journal
+	URLLogDir  string // โฟลเดอร์เก็บ logs/{mediaSlug}.log (env: URL_LOG_DIR)
+	URLLogMode string // off | error | all (env: URL_LOG_MODE)
 }
 
 // Load reads configuration from environment variables (and .env file).
@@ -39,7 +43,9 @@ func Load() {
 		Port:      getEnv("PORT", getEnv("HTTP_PORT", "8886")),
 		Pop:       getEnv("PREWARM_POP", ""), // ว่าง = auto-detect
 		StorageId: getEnv("STORAGE_ID", ""),
-		LogPath:   getEnv("LOG_PATH", "logs/worker-prewarm.log"),
+
+		URLLogDir:  getEnv("URL_LOG_DIR", "logs"),
+		URLLogMode: getEnv("URL_LOG_MODE", "all"),
 	}
 }
 

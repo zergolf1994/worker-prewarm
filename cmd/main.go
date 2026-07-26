@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"worker-prewarm/internal/config"
-	"worker-prewarm/internal/core/logger"
 	"worker-prewarm/internal/core/utils"
 	"worker-prewarm/internal/dashboard"
 	"worker-prewarm/internal/db/database"
@@ -25,13 +24,13 @@ func main() {
 	workerID := utils.GenerateWorkerID()
 	log.Printf("🚀 Starting Worker Prewarm %s [Worker: %s]", version, workerID)
 
-	// ── Rotating file logger ──────────────────────────────────
-	logCloser, err := logger.Init(config.AppConfig.LogPath)
-	if err != nil {
-		log.Printf("⚠️ File logging disabled: %v", err)
-	} else {
-		defer logCloser.Close()
-		log.Printf("📝 Logging to: %s", config.AppConfig.LogPath)
+	// ── URL log (ไฟล์ต่อ media) ────────────────────────────────
+	// log ทั่วไปออก stdout ให้ systemd/journald เก็บ (journalctl -u ... -f)
+	// ส่วนรายการ URL ที่ warm แยกเป็น logs/{mediaSlug}.log ของใครของมัน
+	if err := prewarm.InitURLLog(config.AppConfig.URLLogDir, config.AppConfig.URLLogMode); err != nil {
+		log.Printf("⚠️ URL log disabled: %v", err)
+	} else if config.AppConfig.URLLogMode != prewarm.URLLogOff {
+		log.Printf("📝 URL log (%s): %s/{mediaSlug}.log", config.AppConfig.URLLogMode, config.AppConfig.URLLogDir)
 	}
 
 	// ── MongoDB ───────────────────────────────────────────────

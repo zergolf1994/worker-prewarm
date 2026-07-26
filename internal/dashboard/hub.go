@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 )
 
 // ─── Realtime hub (SSE) ──────────────────────────────────────
@@ -53,6 +54,10 @@ type Hub struct {
 	mu      sync.RWMutex
 	clients map[chan []byte]bool
 	active  map[string]*JobInfo // jobID → งานที่กำลังรัน (สำหรับ snapshot)
+
+	// clientCount — อ่านแบบ atomic ให้ Broadcast เช็คได้โดยไม่ต้องจับ lock
+	// (ถูกเรียกหลักร้อยครั้ง/วินาที ระหว่างที่ goroutine warm แย่ง mu กันอยู่)
+	clientCount int64
 }
 
 var instance *Hub
@@ -83,6 +88,7 @@ func (h *Hub) ServeEvents(w http.ResponseWriter, r *http.Request) {
 	ch := make(chan []byte, 256)
 	h.mu.Lock()
 	h.clients[ch] = true
+	atomic.AddInt64(&h.clientCount, 1)
 	// ต่อเข้ามากลางงาน → ส่ง snapshot งานที่กำลังรันให้ก่อน
 	snap := make([]*JobInfo, 0, len(h.active))
 	for _, j := range h.active {
@@ -93,6 +99,7 @@ func (h *Hub) ServeEvents(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		h.mu.Lock()
 		delete(h.clients, ch)
+		atomic.AddInt64(&h.clientCount, -1)
 		h.mu.Unlock()
 	}()
 
@@ -119,7 +126,14 @@ func writeEvent(w http.ResponseWriter, m Message) {
 }
 
 // Broadcast sends a message to all connected clients (drop when buffer full).
+// ไม่มีคนดู dashboard = ไม่ต้อง marshal — ปกติไม่มีใครเปิดค้างไว้ แต่ถูก
+// เรียกทุก URL ที่ warm (หลักร้อยครั้งต่อวินาที) ถ้า marshal ทิ้งทุกครั้ง
+// คือเผา CPU ให้ข้อความที่ไม่มีใครรับ
 func (h *Hub) Broadcast(msgType string, data interface{}) {
+	if atomic.LoadInt64(&h.clientCount) == 0 {
+		return
+	}
+
 	b, err := json.Marshal(Message{Type: msgType, Data: data})
 	if err != nil {
 		return
@@ -143,12 +157,19 @@ func (h *Hub) JobStarted(job *JobInfo) {
 	h.Broadcast("job_start", job)
 }
 
+// JobProgress อัปเดตความคืบหน้าของงาน — ถูกเรียกจาก goroutine ที่ warm
+// ทุกตัว ทุก URL (หลักร้อยครั้ง/วินาที) จึงใช้ read lock + atomic store
+// แทน write lock เดิม ที่บังคับให้ goroutine ทั้งหมดต่อคิวกันทีละตัว
+// (ฝั่งอ่าน snapshot จับ write lock อยู่แล้ว จึงไม่ชนกับการเขียนตรงนี้)
 func (h *Hub) JobProgress(jobID string, progress, total int64) {
-	h.mu.Lock()
-	if j, ok := h.active[jobID]; ok {
-		j.Progress, j.Total = progress, total
+	h.mu.RLock()
+	j, ok := h.active[jobID]
+	h.mu.RUnlock()
+	if !ok {
+		return
 	}
-	h.mu.Unlock()
+	atomic.StoreInt64(&j.Progress, progress)
+	atomic.StoreInt64(&j.Total, total)
 }
 
 func (h *Hub) JobDone(jobID string, stats interface{}) {

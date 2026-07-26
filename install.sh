@@ -18,6 +18,7 @@ DATABASE_URL=""
 PREWARM_POP=""   # ว่าง = auto-detect จาก CF-Ray ตอน start
 STORAGE_ID=""
 DASH_PORT="8886"
+URL_LOG_MODE="off"  # off | error | all — รายการ URL ที่ warm ลง logs/{mediaSlug}.log
 
 APP_NAME="worker-prewarm"
 APP_DIR="/opt/$APP_NAME"
@@ -39,6 +40,7 @@ while [[ $# -gt 0 ]]; do
         --pop)               PREWARM_POP="$2"; shift 2 ;;
         --port)              DASH_PORT="$2"; shift 2 ;;
         --storage-id)        STORAGE_ID="$2"; shift 2 ;;
+        --url-log)           URL_LOG_MODE="$2"; shift 2 ;;
         -h|--help)
             echo "Worker Prewarm Installer"
             echo ""
@@ -53,6 +55,10 @@ while [[ $# -gt 0 ]]; do
             echo "  --port PORT          Dashboard realtime port (default: 8886)"
             echo "  --storage-id ID      ผูกกับ storage — งานใหม่ warm เฉพาะ media ของ storage นี้"
             echo "                       (งาน reprewarm หยิบได้เสมอ; ไม่ใส่ = pool)"
+            echo "  --url-log MODE       รายการ URL ที่ warm → $APP_DIR/logs/{mediaSlug}.log"
+            echo "                       off   = ไม่เก็บ (default)"
+            echo "                       error = หัวสรุป + เฉพาะ URL ที่ล้มเหลว"
+            echo "                       all   = หัวสรุป + ทุก URL (กินดิสก์มาก ~150KB/media)"
             echo "  -h, --help           Show this help"
             echo ""
             echo "Examples:"
@@ -146,9 +152,14 @@ DATABASE_URL=$DATABASE_URL
 PREWARM_POP=$PREWARM_POP
 STORAGE_ID=$STORAGE_ID
 PORT=$DASH_PORT
+URL_LOG_MODE=$URL_LOG_MODE
+URL_LOG_DIR=$APP_DIR/logs
 EOF
 else
     print_status "Keeping existing .env"
+    # .env เดิมยังไม่รู้จักคีย์ใหม่ — เติมให้โดยไม่แตะค่าอื่น
+    grep -q '^URL_LOG_MODE=' "$APP_DIR/.env" || echo "URL_LOG_MODE=$URL_LOG_MODE" >> "$APP_DIR/.env"
+    grep -q '^URL_LOG_DIR='  "$APP_DIR/.env" || echo "URL_LOG_DIR=$APP_DIR/logs"    >> "$APP_DIR/.env"
 fi
 
 # ─── Systemd service template ─────────────────────────────────
@@ -168,6 +179,10 @@ Restart=always
 RestartSec=5
 EnvironmentFile=$APP_DIR/.env
 Environment="WORKER_ID=prewarm_$(hostname)@%i"
+# log ทั่วไปออก stdout → journald เก็บ/หมุนให้ (journalctl -u $SERVICE_NAME@N -f)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=worker-prewarm-%i
 # SIGTERM → worker คืนงานเข้าคิว (Release) + mark ตัวเอง offline ก่อนปิด
 TimeoutStopSec=30
 
