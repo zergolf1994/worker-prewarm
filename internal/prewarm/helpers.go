@@ -81,6 +81,18 @@ func normalizeDomain(d string) string {
 	return d
 }
 
+// normalizeReferer returns a page-like URL. A bare origin without the trailing
+// slash (for example, https://fembed.co) is a different string from the
+// browser-style Referer https://fembed.co/ and may not match Cloudflare rules
+// generated from the configured preview domain.
+func normalizeReferer(d string) string {
+	d = normalizeDomain(d)
+	if d == "" {
+		return ""
+	}
+	return d + "/"
+}
+
 // prewarmParallel อ่านจำนวน HEAD พร้อมกันต่อหนึ่งงานจาก setting "prewarm"
 // แยกตามชนิดงาน: new → prewarm_parallel (default 10),
 // reprewarm → prewarm_old_parallel (default 20) — key เดิมของระบบเก่า

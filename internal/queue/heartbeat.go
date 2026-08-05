@@ -20,9 +20,9 @@ import (
 // ─── Heartbeat ────────────────────────────────────────────────
 //
 // Upserts this worker into the workers collection every minute, keyed by
-// workerId ("transfer_hostname@n"). The enqueuer (vdohide-service) counts
-// capacity from workers with enable=true + fresh heartbeatAt, so a worker
-// that stops beating stops receiving new jobs automatically.
+// workerId ("prewarm_hostname@n"). The enqueuer (vdohide-service) counts
+// capacity from workers with enable=true + fresh heartbeatAt. The enable flag
+// is controlled by the admin; heartbeat only initializes it on first insert.
 
 const (
 	heartbeatInterval = 1 * time.Minute
@@ -59,39 +59,47 @@ func StartHeartbeat(ctx context.Context, workerID string) {
 		// prewarm ไม่เขียนดิสก์ — วัด cwd แค่ให้ admin เห็นสุขภาพเครื่อง
 		sys := gatherSystemInfo(".")
 
-		enable := true
+		diskPaused := false
 		if sys.DiskTotal > 0 {
 			diskPct := float64(sys.DiskUsed) / float64(sys.DiskTotal) * 100
 			if diskPct >= diskPauseThreshold {
 				status = enums.WorkerStatusPaused
-				enable = false
+				diskPaused = true
 				log.Printf("⚠️ Heartbeat: disk usage %.1f%% >= %.0f%% — enable=false", diskPct, diskPauseThreshold)
 			}
 		}
 
 		now := time.Now()
+		setFields := bson.M{
+			"hostname": hostname,
+			"ip":       ip,
+			"pid":      pid,
+			"type":     workerType,
+			// enqueuer จัดคิวราย pop + ประทับ target ให้ worker ที่ผูก storage
+			"pop":        config.AppConfig.Pop,
+			"storageId":  config.AppConfig.StorageId,
+			"status":     status,
+			"activeJobs": activeJobs,
+			// bi-level slots: new + reprewarm รวมกัน (ตาม setting prewarm)
+			"maxJobs":     MaxJobs(hbCtx),
+			"system":      sys,
+			"heartbeatAt": now,
+			"updatedAt":   now,
+		}
+		setOnInsert := bson.M{
+			"_id":       uuid.New().String(),
+			"enable":    true,
+			"createdAt": now,
+		}
+		if diskPaused {
+			// A safety pause may disable a worker, but heartbeat must never
+			// re-enable it automatically after the disk recovers.
+			setFields["enable"] = false
+			delete(setOnInsert, "enable")
+		}
 		update := bson.M{
-			"$set": bson.M{
-				"hostname": hostname,
-				"ip":       ip,
-				"pid":      pid,
-				"type":     workerType,
-				// enqueuer จัดคิวราย pop + ประทับ target ให้ worker ที่ผูก storage
-				"pop":        config.AppConfig.Pop,
-				"storageId":  config.AppConfig.StorageId,
-				"status":     status,
-				"enable":     enable,
-				"activeJobs": activeJobs,
-				// bi-level slots: new + reprewarm รวมกัน (ตาม setting prewarm)
-				"maxJobs":     MaxJobs(hbCtx),
-				"system":      sys,
-				"heartbeatAt": now,
-				"updatedAt":   now,
-			},
-			"$setOnInsert": bson.M{
-				"_id":       uuid.New().String(),
-				"createdAt": now,
-			},
+			"$set":         setFields,
+			"$setOnInsert": setOnInsert,
 		}
 		opts := options.Update().SetUpsert(true)
 		if _, err := models.WorkerModel.Col().UpdateOne(hbCtx, bson.M{"workerId": workerID}, update, opts); err != nil {
@@ -117,6 +125,8 @@ func StartHeartbeat(ctx context.Context, workerID string) {
 
 // markOffline flags the worker offline on graceful shutdown so the admin
 // sees it immediately instead of waiting for the heartbeat TTL to expire.
+// It deliberately preserves enable because that flag is controlled by admin,
+// and expires heartbeatAt so enqueuers stop counting it immediately.
 func markOffline(workerID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -125,9 +135,9 @@ func markOffline(workerID string) {
 	_, err := models.WorkerModel.Col().UpdateOne(ctx,
 		bson.M{"workerId": workerID},
 		bson.M{"$set": bson.M{
-			"status":    enums.WorkerStatusOffline,
-			"enable":    false,
-			"updatedAt": now,
+			"status":      enums.WorkerStatusOffline,
+			"heartbeatAt": time.Unix(0, 0),
+			"updatedAt":   now,
 		}},
 	)
 	if err != nil {
