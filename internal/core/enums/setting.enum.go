@@ -15,7 +15,7 @@ const (
 	// warm (ไม่ตั้ง = ทำงาน prewarm ไม่ได้ → job fail รอ retry)
 	SettingDomainPlaylist = "domain_playlist"
 
-	// domain_player = ใส่เป็น Referer ตอนยิง warm (ถ้าตั้งไว้) — บาง CDN
-	// rule เช็ค referer; ไม่ตั้งก็ยิงเปล่าได้
-	SettingDomainPlayer = "domain_player"
+	// domain_preview = โดเมน player หลักที่ Cloudflare referer allowlist อนุญาต
+	// worker ต้องส่งค่านี้เป็น Referer ทุก request เพื่อผ่าน playlist/segment block rules
+	SettingDomainPreview = "domain_preview"
 )

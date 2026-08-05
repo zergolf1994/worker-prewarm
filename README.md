@@ -49,7 +49,7 @@ enqueuer (vdohide-service)                 worker-prewarm (this repo)
 |---|---|---|
 | `prewarm` | `{enabled, enabled_old, prewarm_max_concurrent, prewarm_old_max_concurrent, prewarm_parallel, prewarm_old_parallel, reprewarm_age_minutes}` | shape เดิมของ server-prewarm — `enabled`/`enabled_old` เปิดปิดงาน new/reprewarm (ปิดทั้งคู่ = worker หยุด claim), `*_max_concurrent` = งานค้างในคิวต่อ pop แยกชนิด, `*_parallel` = HEAD พร้อมกันต่องานแยกชนิด (default 10/20), `reprewarm_age_minutes` = อายุก่อน warm ซ้ำ (default 60) |
 | `domain_playlist` | string | public content-node domain — **required**, งานถูกคืนคิวถ้าไม่ตั้ง |
-| `domain_player` | string | optional; ใส่เป็น `Referer` ทุก request |
+| `domain_preview` | string | player domain ที่อยู่ใน Cloudflare referer allowlist — **required**, ใส่เป็น `Referer` ทุก playlist/segment request และคืนงานเข้าคิวถ้าไม่ตั้ง |
 
 ## Environment Variables
 

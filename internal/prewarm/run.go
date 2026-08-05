@@ -40,7 +40,10 @@ func Run(ctx context.Context, job *models.PrewarmQueue) error {
 		// config ไม่พร้อม — ไม่ใช่ความผิดของงาน คืนคิวพร้อมหน่วงเวลา
 		return fmt.Errorf("setting domain_playlist is not set: %w", queue.ErrJobRequeue)
 	}
-	referer := normalizeDomain(getSettingString(ctx, enums.SettingDomainPlayer))
+	referer := normalizeDomain(getSettingString(ctx, enums.SettingDomainPreview))
+	if referer == "" {
+		return fmt.Errorf("setting domain_preview is not set: %w", queue.ErrJobRequeue)
+	}
 	kind := "new"
 	if job.Kind != nil && *job.Kind != "" {
 		kind = *job.Kind
